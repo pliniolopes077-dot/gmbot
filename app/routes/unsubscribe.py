@@ -6,6 +6,7 @@ from app.db.supabase import get_unsubscribe_history
 router = APIRouter(prefix="/unsubscribe", tags=["unsubscribe"])
 
 
+@router.get("/run")
 @router.post("/run")
 def trigger_unsubscribe(
     max_emails: int = Query(default=50, ge=1, le=500),
