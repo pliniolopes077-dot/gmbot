@@ -76,18 +76,20 @@ export default function Page() {
         if (!r.ok) throw new Error('Erro ao conectar com o servidor')
         const data: RunResult = await r.json()
 
-        setAllResults(prev => [...prev, ...data.results])
-        setSummary(prev => ({
-          total:   prev.total   + data.summary.total,
-          success: prev.success + data.summary.success,
-          failed:  prev.failed  + data.summary.failed,
-          skipped: prev.skipped + data.summary.skipped,
-        }))
-        setTotalScanned(prev => prev + data.progress.emails_scanned)
-        setProgress(data.progress)
+        const prog = data.progress ?? { emails_scanned: 0, has_more: false, next_page_token: null }
 
-        hasMore = data.progress.has_more
-        token = data.progress.next_page_token
+        setAllResults(prev => [...prev, ...(data.results ?? [])])
+        setSummary(prev => ({
+          total:   prev.total   + (data.summary?.total   ?? 0),
+          success: prev.success + (data.summary?.success ?? 0),
+          failed:  prev.failed  + (data.summary?.failed  ?? 0),
+          skipped: prev.skipped + (data.summary?.skipped ?? 0),
+        }))
+        setTotalScanned(prev => prev + prog.emails_scanned)
+        setProgress(prog)
+
+        hasMore = prog.has_more
+        token = prog.next_page_token
       } catch (e: unknown) {
         setError(e instanceof Error ? e.message : 'Erro desconhecido')
         hasMore = false
