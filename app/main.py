@@ -26,7 +26,7 @@ app.include_router(unsubscribe_router)
 
 @app.get("/")
 def root():
-    return {"status": "ok", "app": "Email Bot API"}
+    return {"status": "ok", "app": "Email Bot API", "version": "2"}
 
 
 @app.get("/health")
