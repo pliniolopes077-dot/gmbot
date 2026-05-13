@@ -362,7 +362,7 @@ export default function Page() {
             Varre promoções, atualizações e inbox — pode continuar até cobrir todos os seus e-mails
           </p>
           <button
-            onClick={() => runUnsubscribe(null)}
+            onClick={() => runUnsubscribe()}
             className="w-full bg-white text-blue-700 font-bold py-4 rounded-2xl active:scale-95 transition-transform text-base"
           >
             🚀 Iniciar varredura
