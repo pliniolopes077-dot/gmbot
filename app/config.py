@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     supabase_url: str
     supabase_service_key: str
 
-    secret_key: str
+    secret_key: str = "default-secret-change-in-production"
     frontend_url: str = "http://localhost:3000"
     environment: str = "development"
 
