@@ -50,11 +50,11 @@ export default function Page() {
       .catch(() => setAuthed(false))
   }, [])
 
-  async function runUnsubscribe() {
+  async function runUnsubscribe(max = 200) {
     setView('running')
     setError(null)
     try {
-      const r = await fetch(`${API}/unsubscribe/run`)
+      const r = await fetch(`${API}/unsubscribe/run?max_emails=${max}`)
       if (!r.ok) throw new Error('Erro ao conectar com o servidor')
       const data: RunResult = await r.json()
       setResult(data)
@@ -293,19 +293,27 @@ export default function Page() {
         )}
 
         {/* Main action */}
-        <button
-          onClick={runUnsubscribe}
-          className="w-full bg-blue-600 hover:bg-blue-700 active:scale-95 text-white rounded-3xl p-7 text-left shadow-xl shadow-blue-200 transition-all mb-4"
-        >
+        <div className="bg-blue-600 rounded-3xl p-7 shadow-xl shadow-blue-200 mb-4">
           <div className="text-4xl mb-3">🧹</div>
-          <h2 className="text-2xl font-bold">Descadastrar</h2>
-          <p className="text-blue-200 text-sm mt-1">
-            Escaneia a inbox e remove você de newsletters e mailing lists
+          <h2 className="text-2xl font-bold text-white">Descadastrar</h2>
+          <p className="text-blue-200 text-sm mt-1 mb-5">
+            Escaneia inbox, promoções e atualizações — remove você de mailing lists
           </p>
-          <div className="mt-4 bg-blue-500 rounded-xl px-4 py-2 inline-block text-sm font-semibold">
-            Executar agora →
+          <div className="flex gap-2">
+            <button
+              onClick={() => runUnsubscribe(200)}
+              className="flex-1 bg-white text-blue-700 font-bold py-3 rounded-xl active:scale-95 transition-transform text-sm"
+            >
+              🚀 Padrão (200)
+            </button>
+            <button
+              onClick={() => runUnsubscribe(500)}
+              className="flex-1 bg-blue-500 text-white font-bold py-3 rounded-xl active:scale-95 transition-transform text-sm"
+            >
+              🔍 Completo (500)
+            </button>
           </div>
-        </button>
+        </div>
 
         {/* Secondary actions */}
         <div className="flex flex-col gap-3">
