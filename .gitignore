@@ -21,4 +21,7 @@ Thumbs.db
 
 # Pasta antiga (substituída pela estrutura raiz)
 backend/
-frontend/
+
+# Build do Next.js
+frontend/.next/
+frontend/node_modules/
