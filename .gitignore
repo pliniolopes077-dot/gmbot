@@ -1,0 +1,24 @@
+# Secrets — NUNCA subir para o GitHub
+.env
+token.json
+credentials.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+.next/
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Pasta antiga (substituída pela estrutura raiz)
+backend/
+frontend/
