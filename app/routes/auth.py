@@ -22,9 +22,15 @@ def login():
 def callback(code: str, error: str = None):
     if error:
         raise HTTPException(status_code=400, detail=f"OAuth error: {error}")
-    flow = get_oauth_flow()
-    flow.fetch_token(code=code)
-    save_credentials(flow.credentials)
+    try:
+        flow = get_oauth_flow()
+        flow.fetch_token(code=code)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"fetch_token failed: {exc}")
+    try:
+        save_credentials(flow.credentials)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"save_credentials failed: {exc}")
     settings = get_settings()
     return RedirectResponse(f"{settings.frontend_url}?auth=success")
 
