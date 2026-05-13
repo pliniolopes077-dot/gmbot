@@ -1,10 +1,10 @@
-"""Reads inbox + promotions + updates, extracts List-Unsubscribe, fires GET requests."""
+"""Paginated unsubscribe scan across promotions, updates and inbox."""
 import re
 import logging
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import requests
+import requests as req
 
 from app.auth.gmail import get_authenticated_service
 from app.db.supabase import log_unsubscribe, is_already_unsubscribed
@@ -13,12 +13,8 @@ logger = logging.getLogger(__name__)
 
 _URL_PATTERN = re.compile(r"<(https?://[^>]+)>")
 
-# Labels where newsletters live
-_SEARCH_QUERIES = [
-    "category:promotions",
-    "category:updates",
-    "in:inbox has:unsubscribe",
-]
+# Covers newsletters without scanning personal emails
+_QUERY = "category:promotions OR category:updates OR (in:inbox has:unsubscribe)"
 
 
 def _extract_http_url(header_value: str) -> Optional[str]:
@@ -32,94 +28,98 @@ def _fetch_metadata(service, msg_id: str) -> tuple[str, Optional[dict]]:
             userId="me", id=msg_id, format="metadata",
             metadataHeaders=["From", "Subject", "List-Unsubscribe"],
         ).execute()
-        headers = {h["name"]: h["value"] for h in msg["payload"]["headers"]}
-        return msg_id, headers
+        return msg_id, {h["name"]: h["value"] for h in msg["payload"]["headers"]}
     except Exception as exc:
-        logger.warning("Could not fetch %s: %s", msg_id, exc)
+        logger.warning("metadata %s: %s", msg_id, exc)
         return msg_id, None
 
 
-def _fire_unsubscribe(url: str, timeout: int = 8) -> tuple[str, int]:
+def _fire(url: str) -> tuple[str, int]:
     try:
-        resp = requests.get(url, timeout=timeout, allow_redirects=True)
-        return ("success" if resp.status_code < 400 else "failed", resp.status_code)
-    except requests.exceptions.Timeout:
+        r = req.get(url, timeout=8, allow_redirects=True)
+        return ("success" if r.status_code < 400 else "failed", r.status_code)
+    except req.exceptions.Timeout:
         return "failed", 0
-    except requests.exceptions.RequestException as exc:
-        logger.warning("Request error for %s: %s", url, exc)
+    except req.exceptions.RequestException:
         return "failed", 0
 
 
-def run_unsubscribe(max_emails: int = 200, skip_already_done: bool = True) -> list[dict]:
+def run_unsubscribe(
+    batch_size: int = 300,
+    skip_already_done: bool = True,
+    page_token: Optional[str] = None,
+) -> dict:
+    """
+    Processes one page of emails. Returns results + next_page_token
+    so the client can continue pagination.
+    """
     service = get_authenticated_service()
 
-    # Collect unique message IDs from all label searches
-    seen_ids: set[str] = set()
-    msg_ids: list[str] = []
+    # Fetch one page of message IDs
+    list_kwargs: dict = {"userId": "me", "q": _QUERY, "maxResults": batch_size}
+    if page_token:
+        list_kwargs["pageToken"] = page_token
 
-    per_query = max(max_emails // len(_SEARCH_QUERIES), 50)
-    for query in _SEARCH_QUERIES:
-        try:
-            resp = service.users().messages().list(
-                userId="me", q=query, maxResults=per_query
-            ).execute()
-            for m in resp.get("messages", []):
-                if m["id"] not in seen_ids:
-                    seen_ids.add(m["id"])
-                    msg_ids.append(m["id"])
-        except Exception as exc:
-            logger.warning("List query '%s' failed: %s", query, exc)
+    response = service.users().messages().list(**list_kwargs).execute()
+    msg_ids = [m["id"] for m in response.get("messages", [])]
+    next_token = response.get("nextPageToken")
 
-    logger.info("Fetching metadata for %d messages (parallel)", len(msg_ids))
+    logger.info("Batch: %d messages | next_token=%s", len(msg_ids), bool(next_token))
 
-    # Fetch all metadata in parallel (10 workers)
+    # Parallel metadata fetch
     header_map: dict[str, dict] = {}
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(_fetch_metadata, service, mid): mid for mid in msg_ids}
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(_fetch_metadata, service, mid): mid for mid in msg_ids}
         for future in as_completed(futures):
             mid, headers = future.result()
             if headers:
                 header_map[mid] = headers
 
-    # Process — deduplicate by sender so we don't unsubscribe the same address twice
-    results: list[dict] = []
+    # Build work list — deduplicate by sender
     seen_senders: set[str] = set()
+    work: list[tuple[str, str, str, str]] = []  # (msg_id, sender, subject, url)
 
     for msg_id in msg_ids:
         headers = header_map.get(msg_id)
         if not headers:
             continue
-
         raw_unsub = headers.get("List-Unsubscribe")
         if not raw_unsub:
             continue
-
         sender = headers.get("From", "unknown")
-        subject = headers.get("Subject", "(no subject)")
-
         if sender in seen_senders:
             continue
         seen_senders.add(sender)
-
         url = _extract_http_url(raw_unsub.strip())
+        if url:
+            work.append((msg_id, sender, headers.get("Subject", ""), url))
 
-        if not url:
-            results.append({"email_id": msg_id, "sender": sender, "subject": subject,
-                            "unsubscribe_url": None, "status": "skipped_mailto_only"})
-            continue
+    # Parallel unsubscribe requests
+    results: list[dict] = []
+    skipped = 0
 
+    def _process(item: tuple[str, str, str, str]) -> Optional[dict]:
+        msg_id, sender, subject, url = item
         if skip_already_done and is_already_unsubscribed(sender):
-            results.append({"email_id": msg_id, "sender": sender, "subject": subject,
-                            "unsubscribe_url": url, "status": "skipped_already_done"})
-            continue
-
-        status, code = _fire_unsubscribe(url)
+            return {"email_id": msg_id, "sender": sender, "subject": subject,
+                    "unsubscribe_url": url, "status": "skipped_already_done"}
+        status, code = _fire(url)
         logger.info("[%s] %s → HTTP %s", status.upper(), sender, code)
+        return log_unsubscribe(email_id=msg_id, sender=sender, subject=subject,
+                               unsubscribe_url=url, status=status, status_code=code)
 
-        record = log_unsubscribe(
-            email_id=msg_id, sender=sender, subject=subject,
-            unsubscribe_url=url, status=status, status_code=code,
-        )
-        results.append(record)
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = [pool.submit(_process, item) for item in work]
+        for future in as_completed(futures):
+            r = future.result()
+            if r:
+                results.append(r)
 
-    return results
+    return {
+        "results": results,
+        "progress": {
+            "emails_scanned": len(msg_ids),
+            "has_more": next_token is not None,
+            "next_page_token": next_token,
+        },
+    }

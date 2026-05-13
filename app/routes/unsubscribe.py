@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter, Query, HTTPException
 
 from app.modules.unsubscribe import run_unsubscribe
@@ -9,27 +10,33 @@ router = APIRouter(prefix="/unsubscribe", tags=["unsubscribe"])
 @router.get("/run")
 @router.post("/run")
 def trigger_unsubscribe(
-    max_emails: int = Query(default=50, ge=1, le=500),
+    batch_size: int = Query(default=300, ge=1, le=500),
     skip_already_done: bool = Query(default=True),
+    page_token: Optional[str] = Query(default=None),
 ):
     try:
-        results = run_unsubscribe(max_emails=max_emails, skip_already_done=skip_already_done)
+        data = run_unsubscribe(
+            batch_size=batch_size,
+            skip_already_done=skip_already_done,
+            page_token=page_token,
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=401, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
+    items = data["results"]
     summary = {
-        "total": len(results),
-        "success": sum(1 for r in results if r.get("status") == "success"),
-        "failed": sum(1 for r in results if r.get("status") == "failed"),
-        "skipped": sum(1 for r in results if "skipped" in (r.get("status") or "")),
+        "total": len(items),
+        "success": sum(1 for r in items if r.get("status") == "success"),
+        "failed": sum(1 for r in items if r.get("status") == "failed"),
+        "skipped": sum(1 for r in items if "skipped" in (r.get("status") or "")),
     }
-    return {"summary": summary, "results": results}
+    return {"summary": summary, "results": items, "progress": data["progress"]}
 
 
 @router.get("/history")
-def unsubscribe_history(limit: int = Query(default=50, ge=1, le=500)):
+def unsubscribe_history(limit: int = Query(default=100, ge=1, le=500)):
     try:
         data = get_unsubscribe_history(limit=limit)
     except Exception as exc:

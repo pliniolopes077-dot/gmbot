@@ -16,15 +16,16 @@ interface UnsubItem {
   created_at?: string
 }
 
+interface Progress {
+  emails_scanned: number
+  has_more: boolean
+  next_page_token: string | null
+}
+
 interface RunResult {
   summary: { total: number; success: number; failed: number; skipped: number }
   results: UnsubItem[]
-}
-
-function statusIcon(status: string) {
-  if (status === 'success') return { icon: '✅', color: 'text-green-600', bg: 'bg-green-50' }
-  if (status === 'failed') return { icon: '❌', color: 'text-red-500', bg: 'bg-red-50' }
-  return { icon: '⏭', color: 'text-gray-400', bg: 'bg-gray-50' }
+  progress: Progress
 }
 
 function cleanSender(raw: string) {
@@ -32,42 +33,71 @@ function cleanSender(raw: string) {
   return match ? match[1].trim() : raw.split('<')[0].trim()
 }
 
+function StatusIcon({ status }: { status: string }) {
+  if (status === 'success') return <span className="text-xl">✅</span>
+  if (status === 'failed') return <span className="text-xl">❌</span>
+  return <span className="text-xl text-gray-300">⏭</span>
+}
+
 export default function Page() {
   const [authed, setAuthed] = useState<boolean | null>(null)
   const [view, setView] = useState<View>('home')
-  const [result, setResult] = useState<RunResult | null>(null)
+  const [allResults, setAllResults] = useState<UnsubItem[]>([])
+  const [summary, setSummary] = useState({ total: 0, success: 0, failed: 0, skipped: 0 })
+  const [progress, setProgress] = useState<Progress | null>(null)
+  const [totalScanned, setTotalScanned] = useState(0)
   const [history, setHistory] = useState<UnsubItem[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [isContinuing, setIsContinuing] = useState(false)
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    if (params.get('auth') === 'success') {
-      window.history.replaceState({}, '', '/')
-    }
+    if (params.get('auth') === 'success') window.history.replaceState({}, '', '/')
     fetch(`${API}/auth/status`)
       .then(r => r.json())
       .then(d => setAuthed(d.authenticated))
       .catch(() => setAuthed(false))
   }, [])
 
-  async function runUnsubscribe(max = 200) {
-    setView('running')
+  async function runUnsubscribe(pageToken: string | null = null) {
+    const isResume = pageToken !== null
+    if (!isResume) {
+      setAllResults([])
+      setSummary({ total: 0, success: 0, failed: 0, skipped: 0 })
+      setTotalScanned(0)
+      setView('running')
+    } else {
+      setIsContinuing(true)
+    }
     setError(null)
+
     try {
-      const r = await fetch(`${API}/unsubscribe/run?max_emails=${max}`)
+      const url = `${API}/unsubscribe/run?batch_size=300${pageToken ? `&page_token=${encodeURIComponent(pageToken)}` : ''}`
+      const r = await fetch(url)
       if (!r.ok) throw new Error('Erro ao conectar com o servidor')
       const data: RunResult = await r.json()
-      setResult(data)
+
+      setAllResults(prev => [...prev, ...data.results])
+      setSummary(prev => ({
+        total: prev.total + data.summary.total,
+        success: prev.success + data.summary.success,
+        failed: prev.failed + data.summary.failed,
+        skipped: prev.skipped + data.summary.skipped,
+      }))
+      setProgress(data.progress)
+      setTotalScanned(prev => prev + data.progress.emails_scanned)
       setView('results')
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Erro desconhecido')
       setView('home')
+    } finally {
+      setIsContinuing(false)
     }
   }
 
   async function loadHistory() {
     try {
-      const r = await fetch(`${API}/unsubscribe/history?limit=100`)
+      const r = await fetch(`${API}/unsubscribe/history?limit=200`)
       const d = await r.json()
       setHistory(d.items || [])
       setView('history')
@@ -80,22 +110,18 @@ export default function Page() {
     await fetch(`${API}/auth/logout`, { method: 'POST' }).catch(() => {})
     setAuthed(false)
     setView('home')
-    setResult(null)
   }
 
-  // ── Loading ────────────────────────────────────────────────────────────────
+  // ── Loading ───────────────────────────────────────────────────────────────
   if (authed === null) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="flex flex-col items-center gap-3">
-          <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
-          <p className="text-gray-400 text-sm">Carregando...</p>
-        </div>
+        <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
       </div>
     )
   }
 
-  // ── Not logged in ──────────────────────────────────────────────────────────
+  // ── Not logged in ─────────────────────────────────────────────────────────
   if (!authed) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-600 to-indigo-700 flex flex-col items-center justify-center p-6">
@@ -105,13 +131,11 @@ export default function Page() {
             <h1 className="text-3xl font-bold text-white">Email Bot</h1>
             <p className="text-blue-200 mt-2 text-sm">Automatize seu Gmail em um toque</p>
           </div>
-
-          <div className="bg-white/10 backdrop-blur rounded-2xl p-5 w-full text-blue-100 text-sm space-y-2">
+          <div className="bg-white/10 backdrop-blur rounded-2xl p-5 w-full text-blue-100 text-sm space-y-3">
             <div className="flex items-center gap-2"><span>🧹</span> Descadastra newsletters automaticamente</div>
             <div className="flex items-center gap-2"><span>📋</span> Histórico de tudo que foi feito</div>
             <div className="flex items-center gap-2"><span>🗑</span> Limpeza de promoções (em breve)</div>
           </div>
-
           <a
             href={`${API}/auth/login`}
             className="w-full bg-white text-blue-700 font-bold py-4 px-6 rounded-2xl text-center text-lg shadow-lg active:scale-95 transition-transform flex items-center justify-center gap-2"
@@ -129,7 +153,7 @@ export default function Page() {
     )
   }
 
-  // ── Running ────────────────────────────────────────────────────────────────
+  // ── Running ───────────────────────────────────────────────────────────────
   if (view === 'running') {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center gap-5 p-6">
@@ -139,95 +163,142 @@ export default function Page() {
           <div className="absolute inset-0 flex items-center justify-center text-2xl">🔍</div>
         </div>
         <div className="text-center">
-          <p className="text-gray-700 font-semibold text-lg">Analisando sua inbox...</p>
-          <p className="text-gray-400 text-sm mt-1">Isso pode levar alguns segundos</p>
+          <p className="text-gray-700 font-semibold text-lg">Analisando seus e-mails...</p>
+          <p className="text-gray-400 text-sm mt-1">Verificando até 300 por vez</p>
         </div>
       </div>
     )
   }
 
-  // ── Results ────────────────────────────────────────────────────────────────
-  if (view === 'results' && result) {
-    const { summary, results } = result
+  // ── Results ───────────────────────────────────────────────────────────────
+  if (view === 'results') {
+    const actionable = allResults.filter(r => r.status === 'success' || r.status === 'failed')
+
     return (
       <div className="min-h-screen">
-        <div className="max-w-lg mx-auto p-4 pb-10">
-          <div className="flex items-center gap-3 py-4 mb-2">
+        <div className="max-w-lg mx-auto p-4 pb-32">
+          <div className="flex items-center gap-3 py-4">
             <button onClick={() => setView('home')} className="text-blue-600 font-medium">← Voltar</button>
             <h2 className="text-lg font-bold text-gray-800">Resultado</h2>
           </div>
 
-          <div className="grid grid-cols-3 gap-3 mb-6">
+          {/* Progress bar */}
+          <div className="bg-slate-100 rounded-2xl p-4 mb-4 flex items-center gap-4">
+            <span className="text-2xl">📊</span>
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-gray-700">
+                {totalScanned.toLocaleString('pt-BR')} e-mails verificados
+              </p>
+              {progress?.has_more && (
+                <p className="text-xs text-gray-400 mt-0.5">Há mais e-mails para verificar</p>
+              )}
+              {!progress?.has_more && (
+                <p className="text-xs text-green-600 mt-0.5 font-medium">✅ Varredura completa!</p>
+              )}
+            </div>
+          </div>
+
+          {/* Summary */}
+          <div className="grid grid-cols-3 gap-3 mb-5">
             <div className="bg-green-50 border border-green-100 rounded-2xl p-4 text-center">
               <div className="text-3xl font-bold text-green-600">{summary.success}</div>
               <div className="text-xs text-green-500 mt-1 font-medium">Descadastros</div>
             </div>
-            <div className="bg-slate-100 border border-slate-200 rounded-2xl p-4 text-center">
-              <div className="text-3xl font-bold text-slate-500">{summary.skipped}</div>
+            <div className="bg-slate-100 rounded-2xl p-4 text-center">
+              <div className="text-3xl font-bold text-slate-400">{summary.skipped}</div>
               <div className="text-xs text-slate-400 mt-1 font-medium">Já feitos</div>
             </div>
             <div className="bg-red-50 border border-red-100 rounded-2xl p-4 text-center">
-              <div className="text-3xl font-bold text-red-500">{summary.failed}</div>
+              <div className="text-3xl font-bold text-red-400">{summary.failed}</div>
               <div className="text-xs text-red-400 mt-1 font-medium">Falhas</div>
             </div>
           </div>
 
-          <p className="text-xs text-gray-400 mb-3 px-1">{summary.total} e-mails analisados</p>
-
-          <div className="flex flex-col gap-2">
-            {results.map((item, i) => {
-              const { icon, color, bg } = statusIcon(item.status)
-              return (
-                <div key={i} className={`${bg} rounded-xl p-4 flex items-center gap-3`}>
-                  <span className="text-xl shrink-0">{icon}</span>
+          {/* List — only show actionable items */}
+          {actionable.length > 0 && (
+            <div className="flex flex-col gap-2">
+              {actionable.map((item, i) => (
+                <div
+                  key={i}
+                  className={`rounded-xl p-4 flex items-center gap-3 ${item.status === 'success' ? 'bg-green-50' : 'bg-red-50'}`}
+                >
+                  <StatusIcon status={item.status} />
                   <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-gray-800 text-sm truncate">
-                      {cleanSender(item.sender)}
-                    </p>
+                    <p className="font-semibold text-gray-800 text-sm truncate">{cleanSender(item.sender)}</p>
                     <p className="text-gray-400 text-xs truncate">{item.subject}</p>
                     {item.status === 'failed' && item.status_code ? (
-                      <p className={`text-xs mt-0.5 ${color}`}>HTTP {item.status_code}</p>
+                      <p className="text-xs text-red-400 mt-0.5">HTTP {item.status_code}</p>
                     ) : null}
                   </div>
                 </div>
-              )
-            })}
-          </div>
+              ))}
+            </div>
+          )}
+
+          {actionable.length === 0 && (
+            <div className="text-center py-8 text-gray-400">
+              <div className="text-3xl mb-2">⏭</div>
+              <p className="text-sm">Todos já foram descadastrados anteriormente</p>
+            </div>
+          )}
         </div>
+
+        {/* Fixed bottom bar */}
+        {progress?.has_more && (
+          <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t border-gray-100 shadow-lg">
+            <div className="max-w-lg mx-auto">
+              <button
+                onClick={() => runUnsubscribe(progress.next_page_token)}
+                disabled={isContinuing}
+                className="w-full bg-blue-600 disabled:bg-blue-300 text-white font-bold py-4 rounded-2xl active:scale-95 transition-all flex items-center justify-center gap-2"
+              >
+                {isContinuing ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Verificando...
+                  </>
+                ) : (
+                  <>🔍 Continuar varredura</>
+                )}
+              </button>
+              <p className="text-center text-xs text-gray-400 mt-2">
+                +300 e-mails por vez
+              </p>
+            </div>
+          </div>
+        )}
       </div>
     )
   }
 
-  // ── History ────────────────────────────────────────────────────────────────
+  // ── History ───────────────────────────────────────────────────────────────
   if (view === 'history') {
     const successes = history.filter(h => h.status === 'success')
     const failures = history.filter(h => h.status === 'failed')
-
     return (
       <div className="min-h-screen">
         <div className="max-w-lg mx-auto p-4 pb-10">
-          <div className="flex items-center gap-3 py-4 mb-2">
+          <div className="flex items-center gap-3 py-4">
             <button onClick={() => setView('home')} className="text-blue-600 font-medium">← Voltar</button>
             <h2 className="text-lg font-bold text-gray-800">Histórico</h2>
             <span className="ml-auto text-xs text-gray-400">{history.length} registros</span>
           </div>
-
           {history.length === 0 ? (
             <div className="text-center py-16 text-gray-400">
               <div className="text-4xl mb-3">📭</div>
-              <p>Nenhum descadastro ainda</p>
+              <p>Nenhum registro ainda</p>
             </div>
           ) : (
             <>
               {successes.length > 0 && (
-                <>
-                  <p className="text-xs font-semibold text-green-600 uppercase tracking-wide mb-2 px-1">
+                <div className="mb-5">
+                  <p className="text-xs font-bold text-green-600 uppercase tracking-wide mb-2 px-1">
                     ✅ Descadastros ({successes.length})
                   </p>
-                  <div className="flex flex-col gap-2 mb-5">
+                  <div className="flex flex-col gap-2">
                     {successes.map((item, i) => (
                       <div key={i} className="bg-green-50 rounded-xl p-4 flex items-center gap-3">
-                        <span className="text-xl shrink-0">✅</span>
+                        <span className="text-xl">✅</span>
                         <div className="flex-1 min-w-0">
                           <p className="font-semibold text-gray-800 text-sm truncate">{cleanSender(item.sender)}</p>
                           <p className="text-gray-400 text-xs">
@@ -237,18 +308,17 @@ export default function Page() {
                       </div>
                     ))}
                   </div>
-                </>
+                </div>
               )}
-
               {failures.length > 0 && (
-                <>
-                  <p className="text-xs font-semibold text-red-500 uppercase tracking-wide mb-2 px-1">
+                <div>
+                  <p className="text-xs font-bold text-red-500 uppercase tracking-wide mb-2 px-1">
                     ❌ Falhas ({failures.length})
                   </p>
                   <div className="flex flex-col gap-2">
                     {failures.map((item, i) => (
                       <div key={i} className="bg-red-50 rounded-xl p-4 flex items-center gap-3">
-                        <span className="text-xl shrink-0">❌</span>
+                        <span className="text-xl">❌</span>
                         <div className="flex-1 min-w-0">
                           <p className="font-semibold text-gray-800 text-sm truncate">{cleanSender(item.sender)}</p>
                           <p className="text-gray-400 text-xs">HTTP {item.status_code}</p>
@@ -256,7 +326,7 @@ export default function Page() {
                       </div>
                     ))}
                   </div>
-                </>
+                </div>
               )}
             </>
           )}
@@ -265,57 +335,42 @@ export default function Page() {
     )
   }
 
-  // ── Home (logged in) ───────────────────────────────────────────────────────
+  // ── Home ──────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen">
       <div className="max-w-lg mx-auto p-4">
-        {/* Header */}
         <div className="flex items-center justify-between py-5">
           <div className="flex items-center gap-2">
             <span className="text-2xl">📧</span>
             <h1 className="text-xl font-bold text-gray-800">Email Bot</h1>
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-xs bg-green-100 text-green-700 px-3 py-1 rounded-full font-medium">
-              ✅ Conectado
-            </span>
-            <button onClick={logout} className="text-xs text-gray-400 hover:text-gray-600 transition-colors">
-              Sair
-            </button>
+            <span className="text-xs bg-green-100 text-green-700 px-3 py-1 rounded-full font-medium">✅ Conectado</span>
+            <button onClick={logout} className="text-xs text-gray-400 hover:text-gray-600">Sair</button>
           </div>
         </div>
 
         {error && (
           <div className="bg-red-50 border border-red-100 rounded-2xl p-4 mb-4 text-red-600 text-sm flex items-center gap-2">
             <span>❌</span> {error}
-            <button onClick={() => setError(null)} className="ml-auto text-red-400">✕</button>
+            <button onClick={() => setError(null)} className="ml-auto text-red-400 text-lg">✕</button>
           </div>
         )}
 
-        {/* Main action */}
         <div className="bg-blue-600 rounded-3xl p-7 shadow-xl shadow-blue-200 mb-4">
           <div className="text-4xl mb-3">🧹</div>
           <h2 className="text-2xl font-bold text-white">Descadastrar</h2>
           <p className="text-blue-200 text-sm mt-1 mb-5">
-            Escaneia inbox, promoções e atualizações — remove você de mailing lists
+            Varre promoções, atualizações e inbox — pode continuar até cobrir todos os seus e-mails
           </p>
-          <div className="flex gap-2">
-            <button
-              onClick={() => runUnsubscribe(200)}
-              className="flex-1 bg-white text-blue-700 font-bold py-3 rounded-xl active:scale-95 transition-transform text-sm"
-            >
-              🚀 Padrão (200)
-            </button>
-            <button
-              onClick={() => runUnsubscribe(500)}
-              className="flex-1 bg-blue-500 text-white font-bold py-3 rounded-xl active:scale-95 transition-transform text-sm"
-            >
-              🔍 Completo (500)
-            </button>
-          </div>
+          <button
+            onClick={() => runUnsubscribe(null)}
+            className="w-full bg-white text-blue-700 font-bold py-4 rounded-2xl active:scale-95 transition-transform text-base"
+          >
+            🚀 Iniciar varredura
+          </button>
         </div>
 
-        {/* Secondary actions */}
         <div className="flex flex-col gap-3">
           <button
             onClick={loadHistory}
@@ -325,13 +380,13 @@ export default function Page() {
               <span className="text-3xl">📋</span>
               <div>
                 <h3 className="font-bold text-gray-800">Histórico</h3>
-                <p className="text-gray-400 text-sm">Veja todos os descadastros já feitos</p>
+                <p className="text-gray-400 text-sm">Todos os descadastros realizados</p>
               </div>
               <span className="ml-auto text-gray-300 text-xl">›</span>
             </div>
           </button>
 
-          <div className="w-full bg-white border border-dashed border-gray-200 rounded-2xl p-5 opacity-40 cursor-not-allowed">
+          <div className="w-full bg-white border border-dashed border-gray-200 rounded-2xl p-5 opacity-40">
             <div className="flex items-center gap-4">
               <span className="text-3xl">🗑</span>
               <div>
