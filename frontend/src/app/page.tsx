@@ -48,7 +48,6 @@ export default function Page() {
   const [totalScanned, setTotalScanned] = useState(0)
   const [history, setHistory] = useState<UnsubItem[]>([])
   const [error, setError] = useState<string | null>(null)
-  const [isContinuing, setIsContinuing] = useState(false)
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -59,40 +58,43 @@ export default function Page() {
       .catch(() => setAuthed(false))
   }, [])
 
-  async function runUnsubscribe(pageToken: string | null = null) {
-    const isResume = pageToken !== null
-    if (!isResume) {
-      setAllResults([])
-      setSummary({ total: 0, success: 0, failed: 0, skipped: 0 })
-      setTotalScanned(0)
-      setView('running')
-    } else {
-      setIsContinuing(true)
-    }
+  async function runUnsubscribe() {
+    setAllResults([])
+    setSummary({ total: 0, success: 0, failed: 0, skipped: 0 })
+    setTotalScanned(0)
+    setProgress(null)
     setError(null)
+    setView('running')
 
-    try {
-      const url = `${API}/unsubscribe/run?batch_size=300${pageToken ? `&page_token=${encodeURIComponent(pageToken)}` : ''}`
-      const r = await fetch(url)
-      if (!r.ok) throw new Error('Erro ao conectar com o servidor')
-      const data: RunResult = await r.json()
+    let token: string | null = null
+    let hasMore = true
 
-      setAllResults(prev => [...prev, ...data.results])
-      setSummary(prev => ({
-        total: prev.total + data.summary.total,
-        success: prev.success + data.summary.success,
-        failed: prev.failed + data.summary.failed,
-        skipped: prev.skipped + data.summary.skipped,
-      }))
-      setProgress(data.progress)
-      setTotalScanned(prev => prev + data.progress.emails_scanned)
-      setView('results')
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Erro desconhecido')
-      setView('home')
-    } finally {
-      setIsContinuing(false)
+    while (hasMore) {
+      try {
+        const url = `${API}/unsubscribe/run?batch_size=300${token ? `&page_token=${encodeURIComponent(token)}` : ''}`
+        const r = await fetch(url)
+        if (!r.ok) throw new Error('Erro ao conectar com o servidor')
+        const data: RunResult = await r.json()
+
+        setAllResults(prev => [...prev, ...data.results])
+        setSummary(prev => ({
+          total:   prev.total   + data.summary.total,
+          success: prev.success + data.summary.success,
+          failed:  prev.failed  + data.summary.failed,
+          skipped: prev.skipped + data.summary.skipped,
+        }))
+        setTotalScanned(prev => prev + data.progress.emails_scanned)
+        setProgress(data.progress)
+
+        hasMore = data.progress.has_more
+        token = data.progress.next_page_token
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : 'Erro desconhecido')
+        hasMore = false
+      }
     }
+
+    setView('results')
   }
 
   async function loadHistory() {
@@ -156,16 +158,36 @@ export default function Page() {
   // ── Running ───────────────────────────────────────────────────────────────
   if (view === 'running') {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-5 p-6">
+      <div className="min-h-screen flex flex-col items-center justify-center gap-6 p-6">
         <div className="relative">
-          <div className="w-20 h-20 border-4 border-blue-100 rounded-full" />
-          <div className="w-20 h-20 border-4 border-blue-600 border-t-transparent rounded-full animate-spin absolute inset-0" />
-          <div className="absolute inset-0 flex items-center justify-center text-2xl">🔍</div>
+          <div className="w-24 h-24 border-4 border-blue-100 rounded-full" />
+          <div className="w-24 h-24 border-4 border-blue-600 border-t-transparent rounded-full animate-spin absolute inset-0" />
+          <div className="absolute inset-0 flex items-center justify-center text-3xl">🔍</div>
         </div>
         <div className="text-center">
-          <p className="text-gray-700 font-semibold text-lg">Analisando seus e-mails...</p>
-          <p className="text-gray-400 text-sm mt-1">Verificando até 300 por vez</p>
+          <p className="text-gray-700 font-bold text-xl">Varrendo sua caixa...</p>
+          <p className="text-gray-400 text-sm mt-1">Automático — não feche essa tela</p>
         </div>
+        {totalScanned > 0 && (
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 w-full max-w-xs flex flex-col gap-3">
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-500">E-mails verificados</span>
+              <span className="font-bold text-gray-800">{totalScanned.toLocaleString('pt-BR')}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-500">Descadastros</span>
+              <span className="font-bold text-green-600">{summary.success}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-500">Já feitos antes</span>
+              <span className="font-bold text-gray-400">{summary.skipped}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-500">Falhas</span>
+              <span className="font-bold text-red-400">{summary.failed}</span>
+            </div>
+          </div>
+        )}
       </div>
     )
   }
@@ -243,30 +265,6 @@ export default function Page() {
           )}
         </div>
 
-        {/* Fixed bottom bar */}
-        {progress?.has_more && (
-          <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t border-gray-100 shadow-lg">
-            <div className="max-w-lg mx-auto">
-              <button
-                onClick={() => runUnsubscribe(progress.next_page_token)}
-                disabled={isContinuing}
-                className="w-full bg-blue-600 disabled:bg-blue-300 text-white font-bold py-4 rounded-2xl active:scale-95 transition-all flex items-center justify-center gap-2"
-              >
-                {isContinuing ? (
-                  <>
-                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    Verificando...
-                  </>
-                ) : (
-                  <>🔍 Continuar varredura</>
-                )}
-              </button>
-              <p className="text-center text-xs text-gray-400 mt-2">
-                +300 e-mails por vez
-              </p>
-            </div>
-          </div>
-        )}
       </div>
     )
   }
